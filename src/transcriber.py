@@ -42,7 +42,7 @@ class WhisperTranscriber:
 
         self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
             self.model_id,
-            torch_dtype=self.torch_dtype,
+            dtype=self.torch_dtype,
             low_cpu_mem_usage=True,
             use_safetensors=True,
         ).to(self.device)
@@ -54,17 +54,23 @@ class WhisperTranscriber:
             model=self.model,
             tokenizer=self.processor.tokenizer,
             feature_extractor=self.processor.feature_extractor,
-            torch_dtype=self.torch_dtype,
+            dtype=self.torch_dtype,
             device=self.device,
         )
 
     def transcribe(self, file_path: str | Path, *, language: str | None = None) -> str:
-        """Ses dosyasını metne çevirir."""
+        """Ses dosyasını metne çevirir (>30 sn için zaman damgası modu gerekir)."""
         lang = language or self.language
         path = str(Path(file_path).expanduser().resolve())
         result = self.pipe(
             path,
+            return_timestamps=True,
             generate_kwargs={"language": lang},
         )
-        text = result.get("text", "") if isinstance(result, dict) else str(result)
-        return text.strip()
+        if not isinstance(result, dict):
+            return str(result).strip()
+        text = (result.get("text") or "").strip()
+        if not text and result.get("chunks"):
+            parts = [c.get("text", "") for c in result["chunks"] if isinstance(c, dict)]
+            text = " ".join(p for p in parts if p).strip()
+        return text
