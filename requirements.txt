@@ -1,0 +1,12 @@
+# PyTorch (GPU, CUDA 11.8): ayrı kurun — CPU için alttaki satırlar yeterli olabilir.
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+torch>=2.1.0
+torchaudio>=2.1.0
+transformers>=4.40.0
+accelerate>=0.27.0
+datasets>=2.16.0
+soundfile>=0.12.1
+librosa>=0.10.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
