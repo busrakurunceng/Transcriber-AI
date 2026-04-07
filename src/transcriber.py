@@ -24,12 +24,13 @@ class WhisperTranscriber:
         self,
         model_id: str | None = None,
         *,
-        language: str = "turkish",
+        language: str | None = None,
     ) -> None:
         self.model_id = model_id or os.environ.get(
             "WHISPER_MODEL_ID", "openai/whisper-large-v3"
         )
-        self.language = language
+        # None => Whisper otomatik dil algılama
+        self.language = language or os.environ.get("WHISPER_LANGUAGE") or None
 
         hf_home = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE")
         if not hf_home:
@@ -60,12 +61,15 @@ class WhisperTranscriber:
 
     def transcribe(self, file_path: str | Path, *, language: str | None = None) -> str:
         """Ses dosyasını metne çevirir (>30 sn için zaman damgası modu gerekir)."""
-        lang = language or self.language
+        lang = language if language is not None else self.language
         path = str(Path(file_path).expanduser().resolve())
+        generate_kwargs: dict = {"task": "transcribe"}
+        if lang:
+            generate_kwargs["language"] = lang
         result = self.pipe(
             path,
             return_timestamps=True,
-            generate_kwargs={"language": lang},
+            generate_kwargs=generate_kwargs,
         )
         if not isinstance(result, dict):
             return str(result).strip()
