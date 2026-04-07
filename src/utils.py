@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Tuple
 
@@ -72,3 +73,48 @@ def check_ffmpeg_or_warn() -> None:
             "https://ffmpeg.org/download.html adresinden kurmanız önerilir.",
             file=sys.stderr,
         )
+
+
+def extract_audio_segment_to_wav(
+    audio_path: str | Path,
+    *,
+    start_s: float,
+    end_s: float,
+    sr: int = TARGET_SR,
+) -> Path:
+    """
+    ffmpeg ile sesin belirli bir kısmını WAV (mono, 16k) olarak geçici dosyaya çıkarır.
+    Whisper/pyannote entegrasyonunda segment bazlı transkripsiyon için kullanılır.
+    """
+    src = validate_audio_file(audio_path)
+    if end_s <= start_s:
+        raise ValueError(f"end_s ({end_s}) start_s ({start_s}) değerinden büyük olmalı.")
+    if not ffmpeg_available():
+        raise RuntimeError("ffmpeg bulunamadı; segment kırpma için ffmpeg gereklidir.")
+
+    tmp_dir = Path(tempfile.gettempdir()) / "transcriber-ai"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    out = tmp_dir / f"segment_{src.stem}_{start_s:.2f}_{end_s:.2f}.wav"
+
+    # -ss ... -to ... input'tan önce: hızlı seek
+    # -ac 1 mono, -ar 16000 örnekleme
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        str(start_s),
+        "-to",
+        str(end_s),
+        "-i",
+        str(src),
+        "-ac",
+        "1",
+        "-ar",
+        str(sr),
+        str(out),
+    ]
+    subprocess.run(cmd, check=True)
+    return out
