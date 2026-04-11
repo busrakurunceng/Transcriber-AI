@@ -27,7 +27,7 @@ def main() -> None:
     load_dotenv()
     check_ffmpeg_or_warn()
 
-    audio_path = DATA_DIR / "Why_you_can_t_stop_scrolling_at_night.m4a"
+    audio_path = DATA_DIR / "How_To_Stop_Revenge_Bedtime_Procrastination.m4a"
     if not audio_path.is_file():
         print(
             f"Örnek dosya yok: {audio_path}\n"
@@ -37,6 +37,7 @@ def main() -> None:
         return
 
     validate_audio_file(audio_path)
+    stem = audio_path.stem
 
     print("Model yükleniyor, bu biraz zaman alabilir...")
     transcriber = WhisperTranscriber()
@@ -56,7 +57,7 @@ def main() -> None:
             lines.append(line)
 
         EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        out_file = EXPORTS_DIR / "diarized_output.txt"
+        out_file = EXPORTS_DIR / f"{stem}_diarized_output.txt"
         out_file.write_text("\n".join(lines), encoding="utf-8")
         print(f"Metin kaydedildi: {out_file}")
         return
@@ -68,7 +69,7 @@ def main() -> None:
     print("Sonuç:", text)
 
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_file = EXPORTS_DIR / "output.txt"
+    out_file = EXPORTS_DIR / f"{stem}_output.txt"
     with open(out_file, "w", encoding="utf-8") as f:
         f.write(text)
     print(f"Metin kaydedildi: {out_file}")
