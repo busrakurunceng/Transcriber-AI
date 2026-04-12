@@ -27,7 +27,7 @@ def main() -> None:
     load_dotenv()
     check_ffmpeg_or_warn()
 
-    audio_path = DATA_DIR / "How_To_Stop_Revenge_Bedtime_Procrastination.m4a"
+    audio_path = DATA_DIR / "Your_Inner_Fraud_Is_a_Superpower.m4a"
     if not audio_path.is_file():
         print(
             f"Örnek dosya yok: {audio_path}\n"
