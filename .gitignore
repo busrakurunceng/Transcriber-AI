@@ -8,3 +8,4 @@ __pycache__/
 models/hf_cache/
 data/
 exports/
+output/

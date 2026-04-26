@@ -1,6 +1,6 @@
 """
-Trim a video and its matching SRT subtitle file to a time range, then
-re-base subtitle timestamps to start at 00:00:00 for the new clip.
+Trim a video or audio file and its matching SRT subtitle file to a time range,
+then re-base subtitle timestamps to start at 00:00:00 for the new clip.
 
 Requires: moviepy, pysrt
 See requirements.txt (optional section for this script).
@@ -13,26 +13,31 @@ from pathlib import Path
 # --- Configuration: edit these values for each trim job ----------------------
 # -----------------------------------------------------------------------------
 
-# Source video in ./data/ (e.g. "lecture_part1.mp4")
-VIDEO_FILENAME: str = "my_video.mp4"
+# Source file in ./data/ — video (e.g. .mp4) or audio (e.g. .m4a, .mp3, .wav)
+SOURCE_FILENAME: str = "How_To_Stop_Revenge_Bedtime_Procrastination.m4a"
 
-# Time window on the *original* video timeline, aligned with MoviePy: [START, END)
+# Time window on the *original* media timeline, aligned with MoviePy: [START, END)
 #   (start included, end exclusive — the same half-open range used for SRT overlap).
 # Use "HH:MM:SS", "H:MM:SS", "MM:SS", "M:SS", or optional ",mmm" milliseconds.
-START_TIME: str = "00:00:10"
-END_TIME: str = "00:01:30"
+START_TIME: str = "00:04:11"
+END_TIME: str = "00:04:36"
 
 # Project paths (relative to this script)
 DATA_DIR: Path = Path(__file__).resolve().parent / "data"
 EXPORTS_DIR: Path = Path(__file__).resolve().parent / "exports"
 OUTPUT_DIR: Path = Path(__file__).resolve().parent / "output"
 
-# Optional: video encode settings (passed to write_videofile when supported)
-VIDEO_CODEC: str = "libx264"
-AUDIO_CODEC: str = "aac"
-OUTPUT_VIDEO_SUFFIX: str = ""  # e.g. "_trim" if you do not want to overwrite by name
+# Optional: encode settings
+VIDEO_CODEC: str = "libx264"  # used for video output
+AUDIO_CODEC: str = "aac"  # used for both video audio track and audio-only export
+OUTPUT_FILE_SUFFIX: str = ""  # e.g. "_trim" to avoid name clashes in output/
 
 # -----------------------------------------------------------------------------
+
+# Extensions treated as audio-only (AudioFileClip + write_audiofile)
+AUDIO_EXTENSIONS: frozenset[str] = frozenset(
+    {".m4a", ".mp3", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma", ".aiff", ".aif"}
+)
 
 
 def parse_time_to_seconds(s: str) -> float:
@@ -70,31 +75,57 @@ def _import_video_file_clip():
     return VideoFileClip
 
 
-def trim_video(
+def _import_audio_file_clip():
+    try:
+        from moviepy.editor import AudioFileClip
+    except ImportError:
+        from moviepy import AudioFileClip
+    return AudioFileClip
+
+
+def _subclip(clip, t_start: float, t_end: float):
+    """MoviePy 1.x: subclip; 2.x: subclipped; some builds: with_subclip."""
+    if hasattr(clip, "subclip"):
+        return clip.subclip(t_start, t_end)
+    if hasattr(clip, "subclipped"):
+        return clip.subclipped(t_start, t_end)
+    if hasattr(clip, "with_subclip"):
+        return clip.with_subclip(t_start, t_end)
+    raise TypeError("Clip does not support subclip / subclipped / with_subclip")
+
+
+def trim_media(
     input_path: Path,
     output_path: Path,
     t_start: float,
     t_end: float,
+    *,
+    audio_only: bool,
     video_codec: str = VIDEO_CODEC,
     audio_codec: str = AUDIO_CODEC,
 ) -> None:
     """
-    Load video, cut [t_start, t_end] in seconds, write to output_path.
-    Works with MoviePy 1.x (subclip) and 2.x (with_subclip).
+    Load media, cut [t_start, t_end) in seconds, write to output_path.
+    Uses AudioFileClip for audio-only extensions, else VideoFileClip.
     """
-    VideoFileClip = _import_video_file_clip()
-    clip = VideoFileClip(str(input_path))
+    if audio_only:
+        AudioFileClip = _import_audio_file_clip()
+        clip = AudioFileClip(str(input_path))
+    else:
+        VideoFileClip = _import_video_file_clip()
+        clip = VideoFileClip(str(input_path))
+
     sub = None
     try:
-        if hasattr(clip, "subclip"):
-            sub = clip.subclip(t_start, t_end)
+        sub = _subclip(clip, t_start, t_end)
+        if audio_only:
+            sub.write_audiofile(str(output_path), codec=audio_codec)
         else:
-            sub = clip.with_subclip(t_start, t_end)
-        sub.write_videofile(
-            str(output_path),
-            codec=video_codec,
-            audio_codec=audio_codec,
-        )
+            sub.write_videofile(
+                str(output_path),
+                codec=video_codec,
+                audio_codec=audio_codec,
+            )
     finally:
         if sub is not None:
             try:
@@ -177,16 +208,15 @@ def trim_and_resync_srt(
 
 
 def _resolve_paths() -> tuple[Path, Path, Path, Path]:
-    """Return input video, input SRT, output video, output SRT paths."""
-    stem = Path(VIDEO_FILENAME).stem
-    ext = Path(VIDEO_FILENAME).suffix
-    video_in = DATA_DIR / VIDEO_FILENAME
+    """Return input media, input SRT, output media, output SRT paths."""
+    stem = Path(SOURCE_FILENAME).stem
+    ext = Path(SOURCE_FILENAME).suffix
+    media_in = DATA_DIR / SOURCE_FILENAME
     srt_in = EXPORTS_DIR / f"{stem}.srt"
-    out_name = f"{stem}{OUTPUT_VIDEO_SUFFIX}{ext}"
-    video_out = OUTPUT_DIR / out_name
+    out_name = f"{stem}{OUTPUT_FILE_SUFFIX}{ext}"
+    media_out = OUTPUT_DIR / out_name
     srt_out = OUTPUT_DIR / f"{Path(out_name).stem}.srt"
-    return video_in, srt_in, video_out, srt_out
-
+    return media_in, srt_in, media_out, srt_out
 
 def main() -> int:
     try:
@@ -200,10 +230,12 @@ def main() -> int:
         print("END_TIME must be greater than START_TIME.", file=sys.stderr)
         return 1
 
-    video_in, srt_in, video_out, srt_out = _resolve_paths()
+    media_in, srt_in, media_out, srt_out = _resolve_paths()
+    ext_lower = Path(SOURCE_FILENAME).suffix.lower()
+    audio_only = ext_lower in AUDIO_EXTENSIONS
 
-    if not video_in.is_file():
-        print(f"Video not found: {video_in}", file=sys.stderr)
+    if not media_in.is_file():
+        print(f"File not found: {media_in}", file=sys.stderr)
         return 1
     if not srt_in.is_file():
         print(f"SRT not found: {srt_in}", file=sys.stderr)
@@ -211,13 +243,13 @@ def main() -> int:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"Trimming video: {video_in} -> {video_out} [{t0:.3f}s, {t1:.3f}s]")
+    kind = "audio" if audio_only else "video"
+    print(f"Trimming {kind}: {media_in} -> {media_out} [{t0:.3f}s, {t1:.3f}s)")
     try:
-        trim_video(video_in, video_out, t0, t1)
+        trim_media(media_in, media_out, t0, t1, audio_only=audio_only)
     except Exception as e:
-        print(f"Video trim failed: {e}", file=sys.stderr)
+        print(f"Media trim failed: {e}", file=sys.stderr)
         return 1
-
     try:
         n = trim_and_resync_srt(srt_in, srt_out, t0, t1, t0)
     except Exception as e:
