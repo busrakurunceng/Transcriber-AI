@@ -2,15 +2,26 @@
 Trim a video or audio file and its matching SRT subtitle file to a time range,
 then re-base subtitle timestamps to start at 00:00:00 for the new clip.
 
+With parts.json: media filename, per-part time ranges, titles, hooks, and output
+suffixes (_p01, …) are read from the file; use --part N to select a segment.
+
+If parts.json is absent, SOURCE_FILENAME / START_TIME / END_TIME in this file apply.
+
 Requires: moviepy, pysrt
 See requirements.txt (optional section for this script).
 """
 from __future__ import annotations
 
+import argparse
+import json
 import sys
 from pathlib import Path
+from typing import Any, Optional
+
 # -----------------------------------------------------------------------------
-# --- Configuration: edit these values for each trim job ----------------------
+# --- Configuration -----------------------------------------------------------
+# If parts.json exists next to this script, it is used (see default_part_id and
+# --part). Otherwise these defaults apply.
 # -----------------------------------------------------------------------------
 
 # Source file in ./data/ — video (e.g. .mp4) or audio (e.g. .m4a, .mp3, .wav)
@@ -30,7 +41,7 @@ OUTPUT_DIR: Path = Path(__file__).resolve().parent / "output"
 # Optional: encode settings
 VIDEO_CODEC: str = "libx264"  # used for video output
 AUDIO_CODEC: str = "aac"  # used for both video audio track and audio-only export
-OUTPUT_FILE_SUFFIX: str = ""  # e.g. "_trim" to avoid name clashes in output/
+OUTPUT_FILE_SUFFIX: str = ""  # e.g. "_trim" (legacy); with parts.json, default is _p01, _p02, ...
 
 # -----------------------------------------------------------------------------
 
@@ -207,31 +218,138 @@ def trim_and_resync_srt(
     return len(new_file)
 
 
-def _resolve_paths() -> tuple[Path, Path, Path, Path]:
+def _resolve_paths(
+    source_filename: str,
+    output_file_suffix: str,
+) -> tuple[Path, Path, Path, Path]:
     """Return input media, input SRT, output media, output SRT paths."""
-    stem = Path(SOURCE_FILENAME).stem
-    ext = Path(SOURCE_FILENAME).suffix
-    media_in = DATA_DIR / SOURCE_FILENAME
+    stem = Path(source_filename).stem
+    ext = Path(source_filename).suffix
+    media_in = DATA_DIR / source_filename
     srt_in = EXPORTS_DIR / f"{stem}.srt"
-    out_name = f"{stem}{OUTPUT_FILE_SUFFIX}{ext}"
+    out_name = f"{stem}{output_file_suffix}{ext}"
     media_out = OUTPUT_DIR / out_name
     srt_out = OUTPUT_DIR / f"{Path(out_name).stem}.srt"
     return media_in, srt_in, media_out, srt_out
 
-def main() -> int:
-    try:
+
+def load_parts_config_file(path: Path) -> dict[str, Any]:
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def find_part(
+    data: dict[str, Any], part_id: int
+) -> Optional[dict[str, Any]]:
+    for p in data.get("parts", []):
+        if int(p.get("id", 0)) == part_id:
+            return p
+    return None
+
+
+def resolve_job_from_args(
+    args: argparse.Namespace,
+) -> tuple[str, str, str, str, float, float, Optional[dict[str, Any]], int]:
+    """
+    Returns:
+        source_filename, time_start, time_end, output_suffix, t0, t1, part or None, part_id
+    """
+    script_dir = Path(__file__).resolve().parent
+    # Explicit --config wins; else try parts.json next to this script
+    if args.config is not None:
+        config_path = args.config
+    else:
+        config_path = script_dir / "parts.json"
+
+    if not config_path.is_file():
+        if args.config is not None:
+            print(f"Config file not found: {config_path}", file=sys.stderr)
+            raise ValueError("missing config")
         t0 = parse_time_to_seconds(START_TIME)
         t1 = parse_time_to_seconds(END_TIME)
+        return (
+            SOURCE_FILENAME,
+            START_TIME,
+            END_TIME,
+            OUTPUT_FILE_SUFFIX,
+            t0,
+            t1,
+            None,
+            0,
+        )
+
+    data = load_parts_config_file(config_path)
+    part_id = int(args.part) if args.part is not None else int(data.get("default_part_id", 1))
+    part = find_part(data, part_id)
+    if part is None:
+        print(f"Unknown part id: {part_id} in {config_path}", file=sys.stderr)
+        raise ValueError("unknown part")
+
+    media = data.get("media") or {}
+    source_filename = str(media.get("source_filename", SOURCE_FILENAME))
+    t_start = str(part["time_start"])
+    t_end = str(part["time_end"])
+    t0 = parse_time_to_seconds(t_start)
+    t1 = parse_time_to_seconds(t_end)
+    out_suffix = str(part.get("output_suffix", f"_p{part_id:02d}"))
+    return source_filename, t_start, t_end, out_suffix, t0, t1, part, part_id
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Trim media and matching SRT to a time range; use parts.json for multi-part projects.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to parts.json (default: parts.json next to this script).",
+    )
+    parser.add_argument(
+        "--part",
+        type=int,
+        default=None,
+        help="Part id from JSON (overrides default_part_id in the file).",
+    )
+    args = parser.parse_args()
+
+    try:
+        (
+            source_filename,
+            time_start,
+            time_end,
+            out_suffix,
+            t0,
+            t1,
+            part,
+            part_id,
+        ) = resolve_job_from_args(args)
     except ValueError as e:
-        print(f"Invalid time configuration: {e}", file=sys.stderr)
+        if str(e) in ("missing config", "unknown part"):
+            return 1
+        print(f"Invalid time or config: {e}", file=sys.stderr)
         return 1
 
     if t1 <= t0:
-        print("END_TIME must be greater than START_TIME.", file=sys.stderr)
+        print("End time must be after start time.", file=sys.stderr)
         return 1
 
-    media_in, srt_in, media_out, srt_out = _resolve_paths()
-    ext_lower = Path(SOURCE_FILENAME).suffix.lower()
+    if part is not None:
+        title = part.get("title", "")
+        tag = part.get("tag", "")
+        print(
+            f"Part {part_id}: {title}" + (f"  ({tag})" if tag else ""),
+        )
+        print(
+            f"  Time: {time_start} – {time_end}  [{t0:.3f}s, {t1:.3f}s)  (~{(t1 - t0) / 60.0:.2f} min)",
+        )
+        h = str(part.get("hook", ""))
+        if h:
+            short = h if len(h) <= 120 else h[:117] + "..."
+            print(f"  Hook: {short}")
+
+    media_in, srt_in, media_out, srt_out = _resolve_paths(source_filename, out_suffix)
+    ext_lower = Path(source_filename).suffix.lower()
     audio_only = ext_lower in AUDIO_EXTENSIONS
 
     if not media_in.is_file():
@@ -244,7 +362,9 @@ def main() -> int:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     kind = "audio" if audio_only else "video"
-    print(f"Trimming {kind}: {media_in} -> {media_out} [{t0:.3f}s, {t1:.3f}s)")
+    print(
+        f"Trimming {kind}: {media_in} -> {media_out} [{t0:.3f}s, {t1:.3f}s)",
+    )
     try:
         trim_media(media_in, media_out, t0, t1, audio_only=audio_only)
     except Exception as e:
