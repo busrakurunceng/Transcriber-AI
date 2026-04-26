@@ -80,7 +80,7 @@ Cuts a file under `data/` to a time range and writes a matching `output/` file; 
 
 **Config**
 
-- Prefer **`parts/parts.json`**: defines `media.source_filename`, `default_part_id`, and a `parts` array (each with `id`, `time_start`, `time_end`, `title`, `hook`, and optional `output_suffix`; default suffix is `_p01`, `_p02`, …).
+- Prefer **`parts/parts.json`**: defines `media.source_filename`, `default_part_id`, and a `parts` array (each with `id`, `time_start`, `time_end`, `title`, `hook`, and optional `output_suffix`; default suffix is `_p01`, `_p02`, …). Output files are named `{source_stem}_{sanitized_title}{suffix}.ext` when `title` is set.
 - A **`parts.json` in the project root** is used if `parts/parts.json` is missing.
 - If **no** `parts.json` is found, the script falls back to `SOURCE_FILENAME`, `START_TIME`, and `END_TIME` at the top of `trim_video_srt.py`.
 
@@ -90,7 +90,7 @@ Cuts a file under `data/` to a time range and writes a matching `output/` file; 
 # Use default part from parts/parts.json
 python trim_video_srt.py
 
-# Choose part id 3; writes e.g. output\Name_p03.m4a and Name_p03.srt
+# Choose part id 3; writes e.g. output\Name_Title_p03.m4a (Title from JSON) and matching .srt
 python trim_video_srt.py --part 3
 
 # Use another JSON file

@@ -3,7 +3,8 @@ Trim a video or audio file and its matching SRT subtitle file to a time range,
 then re-base subtitle timestamps to start at 00:00:00 for the new clip.
 
 With parts/parts.json (or root parts.json): per-part time ranges, titles, hooks, and
-output suffixes (_p01, …); use --part N to select a segment.
+output suffixes (_p01, …); output basename is {media_stem}_{title_slug}{suffix} when
+title is set; use --part N to select a segment.
 
 If no parts config is found, SOURCE_FILENAME / START_TIME / END_TIME in this file apply.
 
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -76,6 +78,21 @@ def parse_time_to_seconds(s: str) -> float:
         h, m, sec = int(parts[0]), int(parts[1]), float(parts[2])
         return h * 3600.0 + m * 60.0 + sec + ms
     raise ValueError(f"Unrecognized time format: {s!r}")
+
+
+def _sanitize_title_for_filename(title: str, max_len: int = 100) -> str:
+    """
+    Build a single path segment from JSON `title` (spaces → underscores, strip illegal chars).
+    Empty after sanitization → "".
+    """
+    s = title.strip()
+    for c in '\\/:*?"<>|':
+        s = s.replace(c, "")
+    s = re.sub(r"\s+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    if len(s) > max_len:
+        s = s[:max_len].rstrip("_")
+    return s
 
 
 def _import_video_file_clip():
@@ -221,13 +238,20 @@ def trim_and_resync_srt(
 def _resolve_paths(
     source_filename: str,
     output_file_suffix: str,
+    *,
+    title_stem: str | None = None,
 ) -> tuple[Path, Path, Path, Path]:
-    """Return input media, input SRT, output media, output SRT paths."""
+    """
+    Return input media, input SRT, output media, output SRT paths.
+    If title_stem is set (from JSON part title), output base name is
+    ``{source_stem}_{title_stem}{suffix}``; otherwise ``{source_stem}{suffix}``.
+    """
     stem = Path(source_filename).stem
     ext = Path(source_filename).suffix
     media_in = DATA_DIR / source_filename
     srt_in = EXPORTS_DIR / f"{stem}.srt"
-    out_name = f"{stem}{output_file_suffix}{ext}"
+    out_stem = f"{stem}_{title_stem}" if title_stem else stem
+    out_name = f"{out_stem}{output_file_suffix}{ext}"
     media_out = OUTPUT_DIR / out_name
     srt_out = OUTPUT_DIR / f"{Path(out_name).stem}.srt"
     return media_in, srt_in, media_out, srt_out
@@ -335,9 +359,14 @@ def main() -> int:
         print("End time must be after start time.", file=sys.stderr)
         return 1
 
+    title_stem: str | None = None
     if part is not None:
         title = part.get("title", "")
         tag = part.get("tag", "")
+        if title:
+            tsn = _sanitize_title_for_filename(str(title))
+            if tsn:
+                title_stem = tsn
         print(
             f"Part {part_id}: {title}" + (f"  ({tag})" if tag else ""),
         )
@@ -348,8 +377,9 @@ def main() -> int:
         if h:
             short = h if len(h) <= 120 else h[:117] + "..."
             print(f"  Hook: {short}")
-
-    media_in, srt_in, media_out, srt_out = _resolve_paths(source_filename, out_suffix)
+    media_in, srt_in, media_out, srt_out = _resolve_paths(
+        source_filename, out_suffix, title_stem=title_stem
+    )
     ext_lower = Path(source_filename).suffix.lower()
     audio_only = ext_lower in AUDIO_EXTENSIONS
 
