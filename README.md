@@ -13,14 +13,19 @@ A Python project for **audio → text transcription** using Whisper, with option
 
 ```text
 Transcriber-AI/
-├── data/                 # Input audio files (.m4a, .mp3, .wav, ...)
-├── exports/              # Outputs (output.txt, diarized_output.txt)
+├── data/                 # Input media for transcription and for trim script (video / audio)
+├── exports/              # Transcription outputs; also source .srt for `trim_video_srt.py` (same stem as media)
+├── output/               # Trimmed media + re-synced .srt from `trim_video_srt.py` (gitignored)
+├── parts/                # Optional multi-segment config (see below)
+│   ├── parts.json        # per-part time ranges, titles, hooks, output suffixes
+│   └── parts.txt         # human-readable copy of the same plan
 ├── models/               # HF cache (recommended)
 ├── src/
 │   ├── diarizer.py       # pyannote diarization
 │   ├── transcriber.py    # Whisper transcribe + chunking
 │   └── utils.py          # ffmpeg segment export, audio helpers
-├── main.py               # entrypoint
+├── main.py               # transcription entrypoint
+├── trim_video_srt.py     # cut media + adjust subtitles to a time window
 └── requirements.txt
 ```
 
@@ -66,6 +71,33 @@ HF_TOKEN=hf_...
 ```
 
 ## Usage
+
+### Media trim + SRT re-sync (`trim_video_srt.py`)
+
+Cuts a file under `data/` to a time range and writes a matching `output/` file; any cues in `exports/{same_stem}.srt` that fall in that range are kept and re-timestamped to start at `00:00:00`. Requires **`moviepy`** and **`pysrt`** (listed in `requirements.txt`).
+
+**Time semantics:** the window is half-open `[start, end)` (start included, `end` exclusive), matching MoviePy’s subclip.
+
+**Config**
+
+- Prefer **`parts/parts.json`**: defines `media.source_filename`, `default_part_id`, and a `parts` array (each with `id`, `time_start`, `time_end`, `title`, `hook`, and optional `output_suffix`; default suffix is `_p01`, `_p02`, …).
+- A **`parts.json` in the project root** is used if `parts/parts.json` is missing.
+- If **no** `parts.json` is found, the script falls back to `SOURCE_FILENAME`, `START_TIME`, and `END_TIME` at the top of `trim_video_srt.py`.
+
+**Examples (from the repo root, venv active)**
+
+```powershell
+# Use default part from parts/parts.json
+python trim_video_srt.py
+
+# Choose part id 3; writes e.g. output\Name_p03.m4a and Name_p03.srt
+python trim_video_srt.py --part 3
+
+# Use another JSON file
+python trim_video_srt.py --config parts\parts.json --part 2
+```
+
+**Inputs/outputs:** media in `data/`, SRT in `exports/` (filename must match the media stem, e.g. `Clip.m4a` → `exports/Clip.srt`), trimmed results in `output/`.
 
 ### A) Plain transcription (no diarization)
 
