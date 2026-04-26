@@ -2,10 +2,10 @@
 Trim a video or audio file and its matching SRT subtitle file to a time range,
 then re-base subtitle timestamps to start at 00:00:00 for the new clip.
 
-With parts.json: media filename, per-part time ranges, titles, hooks, and output
-suffixes (_p01, …) are read from the file; use --part N to select a segment.
+With parts/parts.json (or root parts.json): per-part time ranges, titles, hooks, and
+output suffixes (_p01, …); use --part N to select a segment.
 
-If parts.json is absent, SOURCE_FILENAME / START_TIME / END_TIME in this file apply.
+If no parts config is found, SOURCE_FILENAME / START_TIME / END_TIME in this file apply.
 
 Requires: moviepy, pysrt
 See requirements.txt (optional section for this script).
@@ -20,8 +20,8 @@ from typing import Any, Optional
 
 # -----------------------------------------------------------------------------
 # --- Configuration -----------------------------------------------------------
-# If parts.json exists next to this script, it is used (see default_part_id and
-# --part). Otherwise these defaults apply.
+# If parts/parts.json or parts.json is present, it is used (see default_part_id
+# and --part). Otherwise these defaults apply.
 # -----------------------------------------------------------------------------
 
 # Source file in ./data/ — video (e.g. .mp4) or audio (e.g. .m4a, .mp3, .wav)
@@ -80,7 +80,7 @@ def parse_time_to_seconds(s: str) -> float:
 
 def _import_video_file_clip():
     try:
-        from moviepy.editor import VideoFileClip
+        from moviepy.editor import VideoFileClip  # type: ignore[import-not-found]
     except ImportError:  # MoviePy 2.x removed moviepy.editor
         from moviepy import VideoFileClip
     return VideoFileClip
@@ -88,7 +88,7 @@ def _import_video_file_clip():
 
 def _import_audio_file_clip():
     try:
-        from moviepy.editor import AudioFileClip
+        from moviepy.editor import AudioFileClip  # type: ignore[import-not-found]
     except ImportError:
         from moviepy import AudioFileClip
     return AudioFileClip
@@ -255,11 +255,12 @@ def resolve_job_from_args(
         source_filename, time_start, time_end, output_suffix, t0, t1, part or None, part_id
     """
     script_dir = Path(__file__).resolve().parent
-    # Explicit --config wins; else try parts.json next to this script
+    # Explicit --config wins; else prefer parts/parts.json, then parts.json
     if args.config is not None:
         config_path = args.config
     else:
-        config_path = script_dir / "parts.json"
+        candidate = script_dir / "parts" / "parts.json"
+        config_path = candidate if candidate.is_file() else (script_dir / "parts.json")
 
     if not config_path.is_file():
         if args.config is not None:
@@ -303,7 +304,7 @@ def main() -> int:
         "--config",
         type=Path,
         default=None,
-        help="Path to parts.json (default: parts.json next to this script).",
+        help="Path to parts.json (default: parts/parts.json or parts.json next to this script).",
     )
     parser.add_argument(
         "--part",
