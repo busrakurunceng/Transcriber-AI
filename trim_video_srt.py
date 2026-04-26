@@ -2,9 +2,10 @@
 Trim a video or audio file and its matching SRT subtitle file to a time range,
 then re-base subtitle timestamps to start at 00:00:00 for the new clip.
 
-With parts/parts.json (or root parts.json): per-part time ranges, titles, hooks, and
-output suffixes (_p01, …); output basename is {media_stem}_{title_slug}{suffix} when
-title is set; use --part N to select a segment.
+With parts/parts.json: processes every part by id (e.g. all five); each output is
+``output/{source_basename}/`` + file named only from the part's JSON ``title``
+(sanitized) and the media extension. Existing project folders are reused. Use
+``--part N`` to run a single part only.
 
 If no parts config is found, SOURCE_FILENAME / START_TIME / END_TIME in this file apply.
 
@@ -18,12 +19,12 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # -----------------------------------------------------------------------------
 # --- Configuration -----------------------------------------------------------
-# If parts/parts.json or parts.json is present, it is used (see default_part_id
-# and --part). Otherwise these defaults apply.
+# If parts/parts.json or parts.json is present, all parts are processed unless --part
+# is given. Otherwise these defaults apply.
 # -----------------------------------------------------------------------------
 
 # Source file in ./data/ — video (e.g. .mp4) or audio (e.g. .m4a, .mp3, .wav)
@@ -43,7 +44,7 @@ OUTPUT_DIR: Path = Path(__file__).resolve().parent / "output"
 # Optional: encode settings
 VIDEO_CODEC: str = "libx264"  # used for video output
 AUDIO_CODEC: str = "aac"  # used for both video audio track and audio-only export
-OUTPUT_FILE_SUFFIX: str = ""  # e.g. "_trim" (legacy); with parts.json, default is _p01, _p02, ...
+OUTPUT_FILE_SUFFIX: str = ""  # e.g. "_trim" (legacy only)
 
 # -----------------------------------------------------------------------------
 
@@ -93,6 +94,24 @@ def _sanitize_title_for_filename(title: str, max_len: int = 100) -> str:
     if len(s) > max_len:
         s = s[:max_len].rstrip("_")
     return s
+
+
+def _prepare_output_subdir_for_source(source_filename: str) -> Path:
+    """
+    ``output/{source_stem}/`` for all trims from that source.
+    Reuses an existing directory; creates it if missing. If a *file* already
+    exists at that path, raises ValueError.
+    """
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    stem = Path(source_filename).stem
+    d = OUTPUT_DIR / stem
+    if d.is_file():
+        raise ValueError(
+            f"Cannot use project folder {d!s}: a file exists with that name; "
+            f"remove or rename it, or pick another media filename."
+        )
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _import_video_file_clip():
@@ -237,23 +256,31 @@ def trim_and_resync_srt(
 
 def _resolve_paths(
     source_filename: str,
-    output_file_suffix: str,
+    output_file_suffix: str = "",
     *,
+    output_dir: Path,
     title_stem: str | None = None,
+    title_only: bool = False,
 ) -> tuple[Path, Path, Path, Path]:
     """
     Return input media, input SRT, output media, output SRT paths.
-    If title_stem is set (from JSON part title), output base name is
-    ``{source_stem}_{title_stem}{suffix}``; otherwise ``{source_stem}{suffix}``.
+    Outputs are written under ``output_dir`` (e.g. ``output/{source_stem}/``).
+    * Legacy: ``{source_stem}{suffix}{ext}`` when title_only is false and title_stem is None.
+    * Parts JSON: ``title_only`` true — output is ``{title_stem}{suffix}{ext}`` (title from JSON only).
     """
     stem = Path(source_filename).stem
     ext = Path(source_filename).suffix
     media_in = DATA_DIR / source_filename
     srt_in = EXPORTS_DIR / f"{stem}.srt"
-    out_stem = f"{stem}_{title_stem}" if title_stem else stem
+    if title_only and title_stem:
+        out_stem = title_stem
+    elif title_stem:
+        out_stem = f"{stem}_{title_stem}"
+    else:
+        out_stem = stem
     out_name = f"{out_stem}{output_file_suffix}{ext}"
-    media_out = OUTPUT_DIR / out_name
-    srt_out = OUTPUT_DIR / f"{Path(out_name).stem}.srt"
+    media_out = output_dir / out_name
+    srt_out = output_dir / f"{Path(out_name).stem}.srt"
     return media_in, srt_in, media_out, srt_out
 
 
@@ -262,127 +289,89 @@ def load_parts_config_file(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
-def find_part(
-    data: dict[str, Any], part_id: int
-) -> Optional[dict[str, Any]]:
-    for p in data.get("parts", []):
-        if int(p.get("id", 0)) == part_id:
-            return p
-    return None
-
-
-def resolve_job_from_args(
-    args: argparse.Namespace,
-) -> tuple[str, str, str, str, float, float, Optional[dict[str, Any]], int]:
-    """
-    Returns:
-        source_filename, time_start, time_end, output_suffix, t0, t1, part or None, part_id
-    """
+def _config_path_from_args(args: argparse.Namespace) -> Path:
     script_dir = Path(__file__).resolve().parent
-    # Explicit --config wins; else prefer parts/parts.json, then parts.json
     if args.config is not None:
-        config_path = args.config
-    else:
-        candidate = script_dir / "parts" / "parts.json"
-        config_path = candidate if candidate.is_file() else (script_dir / "parts.json")
-
-    if not config_path.is_file():
-        if args.config is not None:
-            print(f"Config file not found: {config_path}", file=sys.stderr)
-            raise ValueError("missing config")
-        t0 = parse_time_to_seconds(START_TIME)
-        t1 = parse_time_to_seconds(END_TIME)
-        return (
-            SOURCE_FILENAME,
-            START_TIME,
-            END_TIME,
-            OUTPUT_FILE_SUFFIX,
-            t0,
-            t1,
-            None,
-            0,
-        )
-
-    data = load_parts_config_file(config_path)
-    part_id = int(args.part) if args.part is not None else int(data.get("default_part_id", 1))
-    part = find_part(data, part_id)
-    if part is None:
-        print(f"Unknown part id: {part_id} in {config_path}", file=sys.stderr)
-        raise ValueError("unknown part")
-
-    media = data.get("media") or {}
-    source_filename = str(media.get("source_filename", SOURCE_FILENAME))
-    t_start = str(part["time_start"])
-    t_end = str(part["time_end"])
-    t0 = parse_time_to_seconds(t_start)
-    t1 = parse_time_to_seconds(t_end)
-    out_suffix = str(part.get("output_suffix", f"_p{part_id:02d}"))
-    return source_filename, t_start, t_end, out_suffix, t0, t1, part, part_id
+        return args.config
+    candidate = script_dir / "parts" / "parts.json"
+    return candidate if candidate.is_file() else (script_dir / "parts.json")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Trim media and matching SRT to a time range; use parts.json for multi-part projects.",
-    )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Path to parts.json (default: parts/parts.json or parts.json next to this script).",
-    )
-    parser.add_argument(
-        "--part",
-        type=int,
-        default=None,
-        help="Part id from JSON (overrides default_part_id in the file).",
-    )
-    args = parser.parse_args()
-
+def _process_one_part(
+    *,
+    source_filename: str,
+    part: dict[str, Any],
+    part_id: int,
+    output_dir: Path,
+) -> int:
+    """Trim one part; output basename = sanitized title only. Returns 0 on success."""
     try:
-        (
-            source_filename,
-            time_start,
-            time_end,
-            out_suffix,
-            t0,
-            t1,
-            part,
-            part_id,
-        ) = resolve_job_from_args(args)
-    except ValueError as e:
-        if str(e) in ("missing config", "unknown part"):
-            return 1
-        print(f"Invalid time or config: {e}", file=sys.stderr)
+        t0 = parse_time_to_seconds(str(part["time_start"]))
+        t1 = parse_time_to_seconds(str(part["time_end"]))
+    except (KeyError, ValueError) as e:
+        print(f"Part {part_id}: bad time: {e}", file=sys.stderr)
         return 1
-
     if t1 <= t0:
-        print("End time must be after start time.", file=sys.stderr)
+        print(f"Part {part_id}: end time must be after start time.", file=sys.stderr)
         return 1
 
-    title_stem: str | None = None
-    if part is not None:
-        title = part.get("title", "")
-        tag = part.get("tag", "")
-        if title:
-            tsn = _sanitize_title_for_filename(str(title))
-            if tsn:
-                title_stem = tsn
+    title = str(part.get("title", ""))
+    title_stem = _sanitize_title_for_filename(title) if title else ""
+    if not title_stem:
         print(
-            f"Part {part_id}: {title}" + (f"  ({tag})" if tag else ""),
+            f"Part {part_id}: title required for output filename (empty after sanitize).",
+            file=sys.stderr,
         )
-        print(
-            f"  Time: {time_start} – {time_end}  [{t0:.3f}s, {t1:.3f}s)  (~{(t1 - t0) / 60.0:.2f} min)",
-        )
-        h = str(part.get("hook", ""))
-        if h:
-            short = h if len(h) <= 120 else h[:117] + "..."
-            print(f"  Hook: {short}")
+        return 1
+
+    out_suffix = str(part.get("output_suffix", ""))
+    tag = part.get("tag", "")
+    print(f"Part {part_id}: {title}" + (f"  ({tag})" if tag else ""))
+    print(
+        f"  Time: {part['time_start']} – {part['time_end']}  "
+        f"[{t0:.3f}s, {t1:.3f}s)  (~{(t1 - t0) / 60.0:.2f} min)",
+    )
+    h = str(part.get("hook", ""))
+    if h:
+        short = h if len(h) <= 120 else h[:117] + "..."
+        print(f"  Hook: {short}")
+
     media_in, srt_in, media_out, srt_out = _resolve_paths(
-        source_filename, out_suffix, title_stem=title_stem
+        source_filename,
+        out_suffix,
+        output_dir=output_dir,
+        title_stem=title_stem,
+        title_only=True,
     )
     ext_lower = Path(source_filename).suffix.lower()
     audio_only = ext_lower in AUDIO_EXTENSIONS
 
+    kind = "audio" if audio_only else "video"
+    print(
+        f"Trimming {kind}: {media_in} -> {media_out} [{t0:.3f}s, {t1:.3f}s)",
+    )
+    try:
+        trim_media(media_in, media_out, t0, t1, audio_only=audio_only)
+    except Exception as e:
+        print(f"Part {part_id} media trim failed: {e}", file=sys.stderr)
+        return 1
+    try:
+        n = trim_and_resync_srt(srt_in, srt_out, t0, t1, t0)
+    except Exception as e:
+        print(f"Part {part_id} SRT failed: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Wrote: {media_out} and {srt_out} ({n} subtitle blocks)")
+    return 0
+
+
+def _run_from_parts_config(config_path: Path, args: argparse.Namespace) -> int:
+    data = load_parts_config_file(config_path)
+    media = data.get("media") or {}
+    source_filename = str(media.get("source_filename", SOURCE_FILENAME))
+    stem = Path(source_filename).stem
+    media_in = DATA_DIR / source_filename
+    srt_in = EXPORTS_DIR / f"{stem}.srt"
     if not media_in.is_file():
         print(f"File not found: {media_in}", file=sys.stderr)
         return 1
@@ -390,11 +379,75 @@ def main() -> int:
         print(f"SRT not found: {srt_in}", file=sys.stderr)
         return 1
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        out_dir = _prepare_output_subdir_for_source(source_filename)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
 
+    all_parts: list[dict[str, Any]] = sorted(
+        data.get("parts", []), key=lambda p: int(p.get("id", 0))
+    )
+    if not all_parts:
+        print("No parts in config.", file=sys.stderr)
+        return 1
+    if args.part is not None:
+        to_run = [p for p in all_parts if int(p.get("id", 0)) == int(args.part)]
+        if not to_run:
+            print(f"Unknown part id: {args.part} in {config_path}", file=sys.stderr)
+            return 1
+    else:
+        to_run = all_parts
+
+    for part in to_run:
+        part_id = int(part.get("id", 0))
+        rc = _process_one_part(
+            source_filename=source_filename,
+            part=part,
+            part_id=part_id,
+            output_dir=out_dir,
+        )
+        if rc != 0:
+            return rc
+    print("Done.")
+    return 0
+
+
+def _run_legacy() -> int:
+    try:
+        t0 = parse_time_to_seconds(START_TIME)
+        t1 = parse_time_to_seconds(END_TIME)
+    except ValueError as e:
+        print(f"Invalid time configuration: {e}", file=sys.stderr)
+        return 1
+    if t1 <= t0:
+        print("End time must be after start time.", file=sys.stderr)
+        return 1
+    ext_lower = Path(SOURCE_FILENAME).suffix.lower()
+    audio_only = ext_lower in AUDIO_EXTENSIONS
+    media_in = DATA_DIR / SOURCE_FILENAME
+    srt_in = EXPORTS_DIR / f"{Path(SOURCE_FILENAME).stem}.srt"
+    if not media_in.is_file():
+        print(f"File not found: {media_in}", file=sys.stderr)
+        return 1
+    if not srt_in.is_file():
+        print(f"SRT not found: {srt_in}", file=sys.stderr)
+        return 1
+    try:
+        out_dir = _prepare_output_subdir_for_source(SOURCE_FILENAME)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    media_in, srt_in, media_out, srt_out = _resolve_paths(
+        SOURCE_FILENAME,
+        OUTPUT_FILE_SUFFIX,
+        output_dir=out_dir,
+        title_stem=None,
+        title_only=False,
+    )
     kind = "audio" if audio_only else "video"
     print(
-        f"Trimming {kind}: {media_in} -> {media_out} [{t0:.3f}s, {t1:.3f}s)",
+        f"Trimming {kind} (legacy): {media_in} -> {media_out} [{t0:.3f}s, {t1:.3f}s)",
     )
     try:
         trim_media(media_in, media_out, t0, t1, audio_only=audio_only)
@@ -406,10 +459,36 @@ def main() -> int:
     except Exception as e:
         print(f"SRT processing failed: {e}", file=sys.stderr)
         return 1
-
     print(f"Wrote SRT: {srt_out} ({n} blocks)")
     print("Done.")
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Trim media and SRT: with parts.json, runs every part (or one via --part); output name = title only.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to parts.json (default: parts/parts.json or parts.json next to this script).",
+    )
+    parser.add_argument(
+        "--part",
+        type=int,
+        default=None,
+        help="If set, only this part id from JSON; otherwise all parts are processed.",
+    )
+    args = parser.parse_args()
+
+    config_path = _config_path_from_args(args)
+    if not config_path.is_file():
+        if args.config is not None:
+            print(f"Config file not found: {config_path}", file=sys.stderr)
+            return 1
+        return _run_legacy()
+    return _run_from_parts_config(config_path, args)
 
 
 if __name__ == "__main__":

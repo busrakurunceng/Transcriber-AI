@@ -15,7 +15,7 @@ A Python project for **audio → text transcription** using Whisper, with option
 Transcriber-AI/
 ├── data/                 # Input media for transcription and for trim script (video / audio)
 ├── exports/              # Transcription outputs; also source .srt for `trim_video_srt.py` (same stem as media)
-├── output/               # Trimmed media + re-synced .srt from `trim_video_srt.py` (gitignored)
+├── output/               # Trim runs: `output/{media_basename}/` (gitignored) + trimmed title-named files
 ├── parts/                # Optional multi-segment config (see below)
 │   ├── parts.json        # per-part time ranges, titles, hooks, output suffixes
 │   └── parts.txt         # human-readable copy of the same plan
@@ -80,24 +80,24 @@ Cuts a file under `data/` to a time range and writes a matching `output/` file; 
 
 **Config**
 
-- Prefer **`parts/parts.json`**: defines `media.source_filename`, `default_part_id`, and a `parts` array (each with `id`, `time_start`, `time_end`, `title`, `hook`, and optional `output_suffix`; default suffix is `_p01`, `_p02`, …). Output files are named `{source_stem}_{sanitized_title}{suffix}.ext` when `title` is set.
+- Prefer **`parts/parts.json`**: `media.source_filename` plus a `parts` array (each with `id`, `time_start`, `time_end`, `title` **required** for the output name, `hook`, and optional `output_suffix` — usually left empty). **By default, every part is processed in one run**; use `--part N` for a single segment. **Output** path is `output/{source_stem}/` (folder created or reused; errors if a *file* already exists with that name). Under that folder, files are `{sanitized_title}.ext` (e.g. `Dopamin_Yanilgısı.m4a` and the matching `.srt`).
 - A **`parts.json` in the project root** is used if `parts/parts.json` is missing.
 - If **no** `parts.json` is found, the script falls back to `SOURCE_FILENAME`, `START_TIME`, and `END_TIME` at the top of `trim_video_srt.py`.
 
 **Examples (from the repo root, venv active)**
 
 ```powershell
-# Use default part from parts/parts.json
+# Run all parts (e.g. five exports), each file named from that part's JSON title
 python trim_video_srt.py
 
-# Choose part id 3; writes e.g. output\Name_Title_p03.m4a (Title from JSON) and matching .srt
+# Only part id 3
 python trim_video_srt.py --part 3
 
 # Use another JSON file
-python trim_video_srt.py --config parts\parts.json --part 2
+python trim_video_srt.py --config other\parts.json
 ```
 
-**Inputs/outputs:** media in `data/`, SRT in `exports/` (filename must match the media stem, e.g. `Clip.m4a` → `exports/Clip.srt`), trimmed results in `output/`.
+**Inputs/outputs:** media in `data/`, SRT in `exports/` (filename must match the media stem, e.g. `Clip.m4a` → `exports/Clip.srt`), trimmed results in `output/{Clip or source stem}/` (one project folder per source file).
 
 ### A) Plain transcription (no diarization)
 
