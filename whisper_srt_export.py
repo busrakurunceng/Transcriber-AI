@@ -8,8 +8,10 @@ Kullanım:
   pip install openai-whisper
   (Sistemde ffmpeg kurulu olmalı — Whisper dosyayı böyle yükler.)
 
-  python whisper_srt_export.py path/to/ses_veya_video.m4a
-  python whisper_srt_export.py video.mp4 --model medium --language tr --out exports/video.srt
+  python whisper_srt_export.py
+
+  Başka dosya/dil için aşağıdaki INPUT_FILENAME ve LANGUAGE sabitlerini güncelleyin.
+  İsteğe bağlı CLI: python whisper_srt_export.py --model medium
 
 Ana uygulama (main.py, src/transcriber.py) bu dosyadan bağımsızdır.
 """
@@ -20,6 +22,13 @@ import argparse
 import os
 import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT / "data"
+
+# İşlenecek ses/video — yeni dosya için burayı değiştirin
+INPUT_FILENAME = "From_sad_beige_to_dopamine_decor.m4a"
+LANGUAGE = "en"
 
 
 def _srt_timestamp(seconds: float) -> str:
@@ -52,19 +61,9 @@ def main() -> int:
         description="Whisper ile ses/videodan SRT altyazı dosyası üretir (CapCut ile uyumlu)."
     )
     parser.add_argument(
-        "input",
-        type=Path,
-        help="Ses veya video dosyası (.m4a, .mp3, .mp4, vb.)",
-    )
-    parser.add_argument(
         "--model",
         default=os.environ.get("WHISPER_OPENAI_MODEL", "base"),
         help='Whisper model adı: tiny, base, small, medium, large, large-v2, large-v3 (varsayılan: base)',
-    )
-    parser.add_argument(
-        "--language",
-        default=os.environ.get("WHISPER_LANGUAGE"),
-        help="İsteğe bağlı dil kodu (ör. tr). Boş bırakılırsa otomatik algılanır.",
     )
     parser.add_argument(
         "--out",
@@ -80,9 +79,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    input_path = args.input.expanduser().resolve()
+    input_path = (DATA_DIR / INPUT_FILENAME).resolve()
     if not input_path.is_file():
-        print(f"Dosya bulunamadı: {input_path}", file=sys.stderr)
+        print(
+            f"Dosya bulunamadı: {input_path}\n"
+            f"Lütfen dosyayı '{DATA_DIR}' içine koyun ve "
+            f"whisper_srt_export.py içindeki INPUT_FILENAME değişkenini güncelleyin.",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -108,9 +112,7 @@ def main() -> int:
     print(f"Model yükleniyor: {args.model} (ilk seferde indirilebilir)...")
     model = whisper.load_model(args.model, device=args.device)
 
-    transcribe_kw: dict = {}
-    if args.language:
-        transcribe_kw["language"] = args.language
+    transcribe_kw: dict = {"language": LANGUAGE}
 
     print(f"Transkripsiyon: {input_path}")
     result = model.transcribe(str(input_path), **transcribe_kw)
