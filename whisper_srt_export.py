@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 
 # İşlenecek ses/video — yeni dosya için burayı değiştirin
-INPUT_FILENAME = "Why_knowing_yourself_makes_you_stuck.m4a"
+INPUT_FILENAME = "Why_Success_Blinds_Us_To_Luck.m4a"
 LANGUAGE = "en"
 
 
